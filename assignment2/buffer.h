@@ -3,6 +3,8 @@
 
 #include <linux/slab.h>
 #include <linux/errno.h>
+// #include <stdio.h>
+
 
 /*
     this is our header file for the buffer.
@@ -20,9 +22,9 @@ struct buffer
 	size_t buffersize;                 /* used in pointer arithmetic might need to use size_t for exlusively positive integers */
 	char *rp, *wp; 
     struct mutex mutex; 
-}
+};
 
-size_t space(struct buffer * buf) 
+size_t space(struct buffer *buf) 
 {
     if (buf->rp == buf->wp)
     {
@@ -40,7 +42,7 @@ int resize(struct buffer * buf, size_t size)
 
     if (!pointer) 
     {
-        printf("out of memory");
+        dprintf("out of memory");
         return -ENOMEM;
     }
 
@@ -72,21 +74,21 @@ int resize(struct buffer * buf, size_t size)
 int buffer_init(struct buffer * buf, size_t size)
 {
 	void * pointer;
-	pointer = kmalloc(size * sizeof(*head->buffer),GFP_KERNEL);
+	pointer = kmalloc(size * sizeof(*buf->buffer),GFP_KERNEL);
 
 	if(!pointer) 
     {
-        printf("out of memory");
+        dprintf("out of memory");
         return -ENOMEM; 
     } 
 
 	buf->wp = buf->rp = buf->buffer = pointer;
-	buf->size = size;
+	buf->buffersize = size;
 
 	return 0;
 }
 
-struct buffer * buffer_alloc(size_t size)
+struct buffer *buffer_alloc(size_t size)
 {
     struct buffer * buf = kmalloc(sizeof(*buf), GFP_KERNEL);
     buffer_init(buf,size);
@@ -112,8 +114,8 @@ size_t buffer_write(struct buffer * buf, char * seq, size_t size)
     }
     else
     {
-        const size_t a = (buf->buffer + buf->size) - buf->wp;
-        const size_t b = (buf->rp - buf->buffer) % buf->size;
+        const size_t a = (buf->buffer + buf->buffersize) - buf->wp;
+        const size_t b = (buf->rp - buf->buffer) % buf->buffersize;
         new_size = min(a,size);
         copy_from_user(buf->wp,seq,new_size);
         size -= new_size;
@@ -141,7 +143,7 @@ size_t buffer_read(struct buffer * buf, char * seq, size_t size)
     } 
     else
     {
-        const size_t a = (buf->buffer + buf->size) - buf->rp;
+        const size_t a = (buf->buffer + buf->buffersize) - buf->rp;
         const size_t b = buf->rp - buf->buffer;
   
         new_size = min(a,size);

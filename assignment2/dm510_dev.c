@@ -19,6 +19,7 @@
 #include <linux/semaphore.h>
 /* #include <asm/system.h> */
 #include <asm/switch_to.h>
+// #include <stdio.h>
 
 /* Prototypes - this would normally go in a .h file */
 
@@ -62,8 +63,8 @@ struct phat_pipe
 	int buffersize;                    	/* used in pointer arithmetic */
 	// char *rp, *wp;                  	
 	int nreaders, nwriters;            	/* number of openings for r/w */
-	struct buffer *read_buffer			/* where to read */
-	struct buffer *write_buffer			/* where to write */
+	struct buffer *read_buffer;			/* where to read */
+	struct buffer *write_buffer;		/* where to write */
 	struct fasync_struct *async_queue; 	/* asynchronous readers */
 	struct mutex mutex;                	/* mutual exclusion semaphore */
 	struct cdev cdev;                  	/* Char device structure */
@@ -88,11 +89,11 @@ char device_name 		= DEVICE_NAME;
 /*
  * make a phat pipe
  */
-static void setup_cdev(struct phat_pipe *dev, dev_t device)
+static int setup_cdev(struct phat_pipe *dev, dev_t device)
 {
 	cdev_init(&dev->cdev, &dm510_fops);
 	dev->cdev.owner = THIS_MODULE;
-	return cdev_add (&dev->cdev, device, 1);
+	return cdev_add(&dev->cdev, device, 1);
 }
 
 
@@ -104,7 +105,7 @@ int dm510_init_module( void )
 
 	if( result) 
 	{
-		printf("failed to register");
+		dprintf("failed to register");
 		return result;
 	}
 	for (i = 0; i < buffer_count; i++) 
@@ -112,7 +113,7 @@ int dm510_init_module( void )
 		result = buffer_init( buffers+i, BUFFER_DEFAULT_SIZE );
 		if( result < 0 )
 		{
-			printf("couldn't allocate memory");
+			dprintf("couldn't allocate memory");
 			return result;
 		}
 	}
@@ -123,8 +124,8 @@ int dm510_init_module( void )
 		mutex_init(&devices[i].mutex);
 		// dprintf("Device(%d) = (%d, %d)", i, ( i % buffer_count ), 
 		// 							(( i + 1 ) % buffer_count )); // maybe this needs to go maybe not
-		devices[i].rp  = buffers + ( i % buffer_count );
-		devices[i].wp  = buffers + (( i + 1 ) % buffer_count );
+		devices[i].read_buffer = buffers + ( i % buffer_count );
+		devices[i].write_buffer = buffers + (( i + 1 ) % buffer_count );
 		setup_cdev( devices+i, global_device+i );
 	}
 
@@ -137,14 +138,11 @@ void dm510_cleanup_module( void )
 {
 	int i;
 
-	if (!devices)
-		return; /* nothing else to release */
-
 	for ( i = 0; i < device_count; i++ ) 
 	{
 		cdev_del(&devices[i].cdev);
 	}
-	for ( i = 0 < buffer_count; i++ )
+	for ( i = 0; i < buffer_count; i++ )
 	{
 		buffer_free( buffers + i );
 	}
@@ -164,7 +162,7 @@ static int dm510_open( struct inode *inode, struct file *filp )
 
 	if (mutex_lock_interruptible(&dev->mutex)) 
 	{
-		printf("something interrupted the lock")
+		dprintf("something interrupted the lock");
 		return -ERESTARTSYS;
 	}
 
@@ -174,56 +172,30 @@ static int dm510_open( struct inode *inode, struct file *filp )
 		if( dev->nreaders >= max_chefs )
 		{
 			mutex_unlock(&dev->mutex);
-			printf("too many cooks in the kictehn (too many readers)")
-			return -ERESTARTSYS
+			dprintf("too many cooks in the kictehn (too many readers)");
+			return -ERESTARTSYS;
 		}
 		else
 		{
-			dev->nreders++;
+			dev->nreaders++;
 		}
 	}
 
 	// checking for too many writers using count and flags
+	/* use f_mode,not  f_flags: it's cleaner (fs/open.c tells why) */
 	if(filp->f_mode & FMODE_WRITE)
 	{
 		if( dev->nwriters >= 1)
 		{
 			mutex_unlock(&dev->mutex);
-			printf("only one writer allowed!")
-			return -ERESTARTSYS
+			dprintf("only one writer allowed!");
+			return -ERESTARTSYS;
 		}
 		else
 		{
 			dev->nwriters++;
 		}
 	}
-		
-	if (!dev->buffer) 
-	{
-		/* allocate the buffer */
-		dev->buffer = kmalloc((buffer_default_size), GFP_KERNEL);
-		if (!dev->buffer) 
-		{
-			mutex_unlock(&dev->mutex);
-			printf("out of memory")
-			return -ENOMEM;
-		}
-	}
-	dev->buffersize = buffer_default_size;
-	dev->end = dev->buffer + dev->buffersize;
-	dev->rp = dev->wp = dev->buffer; /* rd and wr from the beginning */
-
-	/* use f_mode,not  f_flags: it's cleaner (fs/open.c tells why) */
-	if (filp->f_mode & FMODE_READ) 
-	{
-		dev->nreaders++;
-	}
-		
-	if (filp->f_mode & FMODE_WRITE)
-	{
-		dev->nwriters++;
-	}
-		
 	mutex_unlock(&dev->mutex);
 
 	return nonseekable_open(inode, filp);
@@ -269,7 +241,7 @@ static ssize_t dm510_read( struct file *filp,
 
 	if (mutex_lock_interruptible(&dev->mutex)) 
 	{
-		printf("lock was interrupted ")
+		dprintf("lock was interrupted ");
 		return -ERESTARTSYS;
 	}
 		
@@ -278,14 +250,14 @@ static ssize_t dm510_read( struct file *filp,
 		mutex_unlock(&dev->mutex); /* release the lock */
 		if (filp->f_flags & O_NONBLOCK)
 		{
-			printf("unable to block file pointer")
+			dprintf("unable to block file pointer");
 			return -EAGAIN;
 		}
 
 		PDEBUG("\"%s\" reading: going to sleep\n", current->comm);
-		if (wait_event_interruptible(dev->inq, (dev->rp != dev->wp))) 
+		if (wait_event_interruptible(dev->inq, (*rp != *wp))) 
 		{
-			printf("reader's sleep interrupted")
+			dprintf("reader's sleep interrupted");
 			return -ERESTARTSYS; /* signal: tell the fs layer to handle it */
 		}
 		/* otherwise loop, but first reacquire the lock */
@@ -312,59 +284,53 @@ static ssize_t dm510_write( struct file *filp,
     size_t count,   /* The max number of bytes to write */
     loff_t *f_pos )  /* The offset in the file           */
 {
-	char **rp = &dev->read_buffer->rp;
-	char **wp = &dev->read_buffer->wp;
+	// char *rp = &dev->read_buffer->rp;
+	// char *wp = &dev->read_buffer->wp;
 
 	struct phat_pipe *dev = filp->private_data;
-	int i;
 
 	if (mutex_lock_interruptible(&dev->mutex))
 	{
-		printf("mutex lock interrupted")
+		dprintf("mutex lock interrupted");
 		return -ERESTARTSYS;
 	}
 
 	/* Make sure there's space to write */
-	if(count > buffers->size )
+	if(count > buffers->buffersize )
 	{
-		printf("message bigger than buffer")
-		return -EMSGSIZE
+		dprintf("message bigger than buffer");
+		return -EMSGSIZE;
 	}
 
 	/* ok, space is there, accept something */
-	while (buffer_free(dev->buffer_write) < count)
+	while (space(dev->write_buffer) < count)
 	{
 		mutex_unlock(&dev->mutex);
 		if (filp->f_flags & O_NONBLOCK)
 		{
-			printf("unable to block file pointer");
+			dprintf("unable to block file pointer");
 			return -EAGAIN;
 		}
 
 		if (wait_event_interruptible(dev->outq, 
-			(buffer_free(dev->write_buffer) >= count)))
+			(space(dev->write_buffer) >= count)))
 		{
-			printf("writer's sleep interrupted ")
-			return -EAGAIN
+			dprintf("writer's sleep interrupted ");
+			return -EAGAIN;
 		}
 
 		if (mutex_lock_interruptible(&dev->mutex))
 		{
-			printf("mutex lock interrupted ")
-			return -ERESTARTSYS
+			dprintf("mutex lock interrupted ");
+			return -ERESTARTSYS;
 		}
 	}
 	count = buffer_write(dev->write_buffer, (char*)buf, count);
-	PDEBUG("Going to accept %li bytes to %p from %p\n", (long)count, *wp, buf);
-	if (copy_from_user(*wp, buf, count)) 
-	{
-		mutex_unlock (&dev->mutex);
-		printf("bad adress ")
-		return -EFAULT;
-	}
+	PDEBUG("Going to accept %li bytes to %p from %p\n", (long)count, &dev->read_buffer->wp, buf);
 
 	/* finally, awake any reader */
-	for( i = 0; i < device_count; i++);
+	int i;
+	for( i = 0; i < device_count; i++)
 	{
 		wake_up_interruptible(&devices[i].inq);
 	}
@@ -383,23 +349,22 @@ long dm510_ioctl(
 {
 	if(cmd == 0)
 	{
-		return buffers->size
+		return buffers->buffersize;
 	}
 	else if(cmd == 1)
 	{
-		int i;
-		for( i = 0; i < buffer_count; i++ )
+		for( int i = 0; i < buffer_count; i++ )
 		{
-			int space = buffers[i].size - buffer_free(buffers+i);
-			if(space > arg)
+			int space_used = buffers[i].buffersize - space(buffers+i);
+			if(space_used > arg)
 			{
-				printf("buffer has %lu of used space. Unable to make it %lu", space, arg)
+				dprintf("buffer has %lu of used space. Unable to make it %lu", space_used, arg);
 				// %lu for unisgned long, we dont know what kind of number it may be.
 				return -EINVAL;
 			}
 			else
 			{
-				for( i = 0; i < buffer_count; i++ )
+				for( int i = 0; i < buffer_count; i++ )
 				{
 					resize(buffers+i,arg);
 				}
@@ -408,11 +373,11 @@ long dm510_ioctl(
 	}
 	else if(cmd == 2)
 	{
-		return max_processes;
+		return max_chefs;
 	}
 	else if(cmd == 3)
 	{
-		max_processes = arg;
+		max_chefs = arg;
 		//also needs more here but i am tired.
 	} 
 	// they do more things here but idk what the fck theyre doing.

@@ -1,4 +1,4 @@
-"# DM510-KernelModule" 
+ 
 # Project 2 - Kernel Module
 A Project given during the fourth semester of the Datalogi course at university.  
 Assigned during the course **"Operating Systems"**
