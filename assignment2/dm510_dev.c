@@ -14,12 +14,12 @@
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/wait.h>
-/* #include <asm/uaccess.h> */
 #include <linux/uaccess.h>
 #include <linux/semaphore.h>
+#include <linux/cdev.h>
 /* #include <asm/system.h> */
 #include <asm/switch_to.h>
-// #include <stdio.h>
+
 
 /* Prototypes - this would normally go in a .h file */
 
@@ -83,7 +83,7 @@ static int max_chefs = 5;
 static int device_count = DEVICE_COUNT; /* number of pipe devices */
 static int buffer_count = BUFFER_COUNT;
 int buffer_default_size = BUFFER_DEFAULT_SIZE;
-char device_name 		= DEVICE_NAME;
+char *device_name 		= DEVICE_NAME;
 
 
 /*
@@ -105,7 +105,7 @@ int dm510_init_module( void )
 
 	if( result) 
 	{
-		dprintf("failed to register");
+		printk(KERN_WARNING "failed to register");
 		return result;
 	}
 	for (i = 0; i < buffer_count; i++) 
@@ -113,7 +113,7 @@ int dm510_init_module( void )
 		result = buffer_init( buffers+i, BUFFER_DEFAULT_SIZE );
 		if( result < 0 )
 		{
-			dprintf("couldn't allocate memory");
+			printk(KERN_WARNING "couldn't allocate memory");
 			return result;
 		}
 	}
@@ -122,7 +122,7 @@ int dm510_init_module( void )
 		init_waitqueue_head(&devices[i].inq);
 		init_waitqueue_head(&devices[i].outq);
 		mutex_init(&devices[i].mutex);
-		// dprintf("Device(%d) = (%d, %d)", i, ( i % buffer_count ), 
+		// printk("Device(%d) = (%d, %d)", i, ( i % buffer_count ), 
 		// 							(( i + 1 ) % buffer_count )); // maybe this needs to go maybe not
 		devices[i].read_buffer = buffers + ( i % buffer_count );
 		devices[i].write_buffer = buffers + (( i + 1 ) % buffer_count );
@@ -162,7 +162,7 @@ static int dm510_open( struct inode *inode, struct file *filp )
 
 	if (mutex_lock_interruptible(&dev->mutex)) 
 	{
-		dprintf("something interrupted the lock");
+		printk(KERN_WARNING "something interrupted the lock");
 		return -ERESTARTSYS;
 	}
 
@@ -172,7 +172,7 @@ static int dm510_open( struct inode *inode, struct file *filp )
 		if( dev->nreaders >= max_chefs )
 		{
 			mutex_unlock(&dev->mutex);
-			dprintf("too many cooks in the kictehn (too many readers)");
+			printk(KERN_WARNING "too many cooks in the kictehn (too many readers)");
 			return -ERESTARTSYS;
 		}
 		else
@@ -188,7 +188,7 @@ static int dm510_open( struct inode *inode, struct file *filp )
 		if( dev->nwriters >= 1)
 		{
 			mutex_unlock(&dev->mutex);
-			dprintf("only one writer allowed!");
+			printk(KERN_WARNING "only one writer allowed!");
 			return -ERESTARTSYS;
 		}
 		else
@@ -233,47 +233,59 @@ static ssize_t dm510_read( struct file *filp,
     char *buf,      /* The buffer to fill with data     */
     size_t count,   /* The max number of bytes to read  */
     loff_t *f_pos )  /* The offset in the file           */
-{
-	
+{	
 	struct phat_pipe *dev = filp->private_data;
-	char **rp = &dev->read_buffer->rp;		// point to rp in buffer struct
-	char **wp = &dev->read_buffer->wp;		// point to wp in buffer struct
+	char **rp = &dev->read_buffer->rp;		// rp in buffer struct
+	char **wp = &dev->read_buffer->wp;		// wp in buffer struct
+
+	// printk(KERN_INFO "R0, %px, %px\n", (void*)*rp, (void*)*wp);
 
 	if (mutex_lock_interruptible(&dev->mutex)) 
 	{
-		dprintf("lock was interrupted ");
+		printk(KERN_WARNING "lock was interrupted ");
 		return -ERESTARTSYS;
 	}
-		
+
 	while (*rp == *wp) /* nothing to read */
 	{ 
+		// printk(KERN_INFO "R1, %px, %px\n", (void*)dev->read_buffer->rp, (void*)dev->read_buffer->wp);
 		mutex_unlock(&dev->mutex); /* release the lock */
 		if (filp->f_flags & O_NONBLOCK)
 		{
-			dprintf("unable to block file pointer");
+			// printk(KERN_INFO "R2, %px, %px\n", (void*)dev->read_buffer->rp, (void*)dev->read_buffer->wp);
+			printk(KERN_WARNING "unable to block file pointer");
 			return -EAGAIN;
 		}
 
-		PDEBUG("\"%s\" reading: going to sleep\n", current->comm);
+		// PDEBUG("\"%s\" reading: going to sleep\n", current->comm);
 		if (wait_event_interruptible(dev->inq, (*rp != *wp))) 
 		{
-			dprintf("reader's sleep interrupted");
+			// printk(KERN_INFO "R3, %px, %px\n", (void*)dev->read_buffer->rp, (void*)dev->read_buffer->wp);
+			printk(KERN_WARNING "reader's sleep interrupted");
 			return -ERESTARTSYS; /* signal: tell the fs layer to handle it */
 		}
 		/* otherwise loop, but first reacquire the lock */
 		if (mutex_lock_interruptible(&dev->mutex)) 
 		{
+			// printk(KERN_INFO "R4, %px, %px\n", (void*)dev->read_buffer->rp, (void*)dev->read_buffer->wp);
 			return -ERESTARTSYS;
 		}
 	}
+	// printk(KERN_INFO "R5, %px, %px\n", (void*)dev->read_buffer->rp, (void*)dev->read_buffer->wp);
 	/* ok, data is there, return something */
 	/* since we use two buffers, we dont check for wrapping like scull did */
 	count = buffer_read(dev->read_buffer, buf, count);
 	mutex_unlock (&dev->mutex);
 
-	/* finally, awake any writers and return */
-	wake_up_interruptible(&dev->outq);
-	PDEBUG("\"%s\" did read %li bytes\n",current->comm, (long)count);
+	/* finally, awake any writer */
+	for(int i = 0; i < device_count; i++)
+	{
+		wake_up_interruptible(&devices[i].outq);
+	}
+
+	// printk(KERN_INFO "R6, %px, %px\n", (void*)dev->read_buffer->rp, (void*)dev->read_buffer->wp);
+	// printk(KERN_INFO "count: %zx\n", count);
+	// PDEBUG("\"%s\" did read %li bytes\n",current->comm, (long)count);
 	return count; //return number of bytes read
 }
 
@@ -284,59 +296,68 @@ static ssize_t dm510_write( struct file *filp,
     size_t count,   /* The max number of bytes to write */
     loff_t *f_pos )  /* The offset in the file           */
 {
-	// char *rp = &dev->read_buffer->rp;
-	// char *wp = &dev->read_buffer->wp;
-
 	struct phat_pipe *dev = filp->private_data;
+	// char *rp = dev->read_buffer->rp;
+	// char *wp = dev->read_buffer->wp;
+
+	// printk(KERN_INFO "W0, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
 
 	if (mutex_lock_interruptible(&dev->mutex))
 	{
-		dprintf("mutex lock interrupted");
+		printk(KERN_WARNING "mutex lock interrupted");
 		return -ERESTARTSYS;
 	}
 
 	/* Make sure there's space to write */
 	if(count > buffers->buffersize )
 	{
-		dprintf("message bigger than buffer");
+		printk(KERN_WARNING "message bigger than buffer");
 		return -EMSGSIZE;
 	}
 
 	/* ok, space is there, accept something */
 	while (space(dev->write_buffer) < count)
 	{
+		// printk(KERN_INFO "W1, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
 		mutex_unlock(&dev->mutex);
 		if (filp->f_flags & O_NONBLOCK)
 		{
-			dprintf("unable to block file pointer");
+			// printk(KERN_INFO "W2, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
+			printk(KERN_WARNING "unable to block file pointer");
 			return -EAGAIN;
 		}
 
 		if (wait_event_interruptible(dev->outq, 
 			(space(dev->write_buffer) >= count)))
 		{
-			dprintf("writer's sleep interrupted ");
+			// printk(KERN_INFO "W3, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
+			printk(KERN_WARNING "writer's sleep interrupted ");
 			return -EAGAIN;
 		}
 
 		if (mutex_lock_interruptible(&dev->mutex))
 		{
-			dprintf("mutex lock interrupted ");
+			// printk(KERN_INFO "W4, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
+			printk(KERN_WARNING "mutex lock interrupted ");
 			return -ERESTARTSYS;
 		}
 	}
+	
+	// printk(KERN_INFO "W5, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
 	count = buffer_write(dev->write_buffer, (char*)buf, count);
-	PDEBUG("Going to accept %li bytes to %p from %p\n", (long)count, &dev->read_buffer->wp, buf);
+	// PDEBUG("Going to accept %li bytes to %px from %px\n", (long)count, &dev->read_buffer->wp, buf);
 
 	/* finally, awake any reader */
-	int i;
-	for( i = 0; i < device_count; i++)
+	for(int i = 0; i < device_count; i++)
 	{
 		wake_up_interruptible(&devices[i].inq);
 	}
 
-	PDEBUG("\"%s\" did write %li bytes\n",current->comm, (long)count);
+	// PDEBUG("\"%s\" did write %li bytes\n",current->comm, (long)count);
 	mutex_unlock(&dev->mutex);
+	
+	// printk(KERN_INFO "W6, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
+	// printk(KERN_INFO "count: %zx\n", count);
 	return count; //return number of bytes written
 }
 
@@ -358,7 +379,7 @@ long dm510_ioctl(
 			int space_used = buffers[i].buffersize - space(buffers+i);
 			if(space_used > arg)
 			{
-				dprintf("buffer has %lu of used space. Unable to make it %lu", space_used, arg);
+				printk(KERN_WARNING "buffer has %d of used space. Unable to make it %lu", space_used, arg);
 				// %lu for unisgned long, we dont know what kind of number it may be.
 				return -EINVAL;
 			}

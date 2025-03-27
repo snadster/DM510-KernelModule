@@ -42,7 +42,7 @@ int resize(struct buffer * buf, size_t size)
 
     if (!pointer) 
     {
-        dprintf("out of memory");
+        printk(KERN_WARNING "out of memory");
         return -ENOMEM;
     }
 
@@ -71,14 +71,14 @@ int resize(struct buffer * buf, size_t size)
     return 0;
 }
 
-int buffer_init(struct buffer * buf, size_t size)
+int buffer_init(struct buffer *buf, size_t size)
 {
-	void * pointer;
-	pointer = kmalloc(size * sizeof(*buf->buffer),GFP_KERNEL);
+	void *pointer;
+	pointer = kmalloc(size * sizeof(*buf->buffer), GFP_KERNEL);
 
 	if(!pointer) 
     {
-        dprintf("out of memory");
+        printk(KERN_WARNING "out of memory");
         return -ENOMEM; 
     } 
 
@@ -104,41 +104,75 @@ int buffer_free(struct buffer * buf)
   
 size_t buffer_write(struct buffer * buf, char * seq, size_t size)
 {
-    int new_size;
+    size_t new_size;
+    size_t county = 0;
     mutex_lock(&buf->mutex);
     if(buf->wp < buf->rp)
     {
         new_size = min((size_t)(buf->wp - buf->rp) - 1, size);
-        copy_from_user(buf->wp,seq,new_size);
+        int check4 = copy_from_user(buf->wp,seq,new_size);
+        if(check4 != 0)
+        {
+            printk(KERN_WARNING "Bad address at check4");
+            return -EFAULT;
+        }
         buf->wp += new_size;
+        county += new_size;
     }
     else
     {
+        // free space after wp
         const size_t a = (buf->buffer + buf->buffersize) - buf->wp;
+        // free space from start to rp
         const size_t b = (buf->rp - buf->buffer) % buf->buffersize;
         new_size = min(a,size);
-        copy_from_user(buf->wp,seq,new_size);
+        // printk(KERN_WARNING "a: %lu, b: %lu, size: %lu, ns: %lu, c: %lu", a, b, size, new_size, county);
+        int check5 = copy_from_user(buf->wp,seq,new_size);
+        if(check5 != 0)
+        {
+            printk(KERN_WARNING "Bad address at check5");
+            return -EFAULT;
+        }
         size -= new_size;
+        county += new_size;
         if(0 < size)
         {
             new_size = min(b,size);
             buf->wp = buf->buffer;
-            copy_from_user(buf->wp,seq,new_size - 1);
+            // TODO: Possible mistake?
+            int check6 = copy_from_user(buf->wp,seq,new_size - 1);
+            if(check6 != 0)
+            {
+                printk(KERN_WARNING "Bad address at check6");
+                return -EFAULT;
+            }
+            county += new_size;
         }
         buf->wp += new_size;
+        // printk(KERN_WARNING "a: %lu, b: %lu, size: %lu, ns: %lu, c: %lu", a, b, size, new_size, county);
+    }
+    // If we reached the end of the buffer, write from the start.
+    if (buf->wp == buf->buffer + buf->buffersize) {
+        buf->wp = buf->buffer;
     }
     mutex_unlock (&buf->mutex);
-    return new_size;
+    // This might be the wrong count
+    return county;
 }
 
 size_t buffer_read(struct buffer * buf, char * seq, size_t size)
 {
-    int new_size = 0;
+    size_t new_size = 0;
     mutex_lock(&buf->mutex);
     if(buf->rp < buf->wp)
     {
         new_size = min((size_t)(buf->wp - buf->rp), size);
-        copy_to_user(seq,buf->rp,new_size);
+        int check1 = copy_to_user(seq,buf->rp,new_size);
+        if(check1 != 0)
+        {
+            printk(KERN_WARNING "Bad address at check1");
+            return -EFAULT;
+        }
         buf->rp += new_size;
     } 
     else
@@ -147,16 +181,30 @@ size_t buffer_read(struct buffer * buf, char * seq, size_t size)
         const size_t b = buf->rp - buf->buffer;
   
         new_size = min(a,size);
-        copy_to_user(seq,buf->rp,new_size);
+        int check2 = copy_to_user(seq,buf->rp,new_size);
+        if(check2 != 0)
+        {
+            printk(KERN_WARNING "Bad address at check2");
+            return -EFAULT;
+        }
         size -= new_size;
         if(0 < size)
         {
             new_size = min(b,new_size);
             buf->rp = buf->buffer;
-            copy_to_user(seq,buf->rp,new_size);
+            int check3 = copy_to_user(seq,buf->rp,new_size);
+            if(check3 != 0)
+            {
+                printk(KERN_WARNING "Bad address at check3");
+                return -EFAULT;
+            }
         }
         buf->rp += new_size;
   
+    }
+    // If we reached the end of the buffer, read from the start.
+    if (buf->rp == buf->buffer + buf->buffersize) {
+        buf->rp = buf->buffer;
     }
     mutex_unlock (&buf->mutex);
     return new_size;
