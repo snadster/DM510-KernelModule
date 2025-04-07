@@ -3,7 +3,6 @@
 
 #include <linux/slab.h>
 #include <linux/errno.h>
-// #include <stdio.h>
 
 
 /*
@@ -18,12 +17,13 @@
 
 struct buffer
 {
-    char *buffer;                      /* begin of buf, end of buf */
-	size_t buffersize;                 /* used in pointer arithmetic might need to use size_t for exlusively positive integers */
+    char *buffer;                      // begin of buf, end of buf 
+	size_t buffersize;                 // used in pointer arithmetic might need to use size_t for exlusively positive integers 
 	char *rp, *wp; 
     struct mutex mutex; 
 };
 
+/* checking how much space is left */
 size_t space(struct buffer *buf) 
 {
     if (buf->rp == buf->wp)
@@ -33,6 +33,7 @@ size_t space(struct buffer *buf)
     return ((buf->rp + buf->buffersize - buf->wp) % buf->buffersize) - 1;
 }
 
+/* change the size of the buffer, used in ioctl */
 int resize(struct buffer * buf, size_t size) 
 {
     void * pointer;
@@ -71,6 +72,7 @@ int resize(struct buffer * buf, size_t size)
     return 0;
 }
 
+/* allocate a buffer of size size */
 int buffer_init(struct buffer *buf, size_t size)
 {
 	void *pointer;
@@ -88,20 +90,23 @@ int buffer_init(struct buffer *buf, size_t size)
 	return 0;
 }
 
+/* allocate space for buffer */
 struct buffer *buffer_alloc(size_t size)
 {
     struct buffer * buf = kmalloc(sizeof(*buf), GFP_KERNEL);
     buffer_init(buf,size);
     return buf;
 }
-  
+
+/* clear buffer */
 int buffer_free(struct buffer * buf)
 {
     kfree(buf->buffer);
     buf->buffer = NULL;
     return 0;
 }
-  
+
+/* write to buffer */
 size_t buffer_write(struct buffer * buf, char * seq, size_t size)
 {
     size_t new_size;
@@ -126,7 +131,6 @@ size_t buffer_write(struct buffer * buf, char * seq, size_t size)
         // free space from start to rp
         const size_t b = (buf->rp - buf->buffer) % buf->buffersize;
         new_size = min(a,size);
-        // printk(KERN_WARNING "a: %lu, b: %lu, size: %lu, ns: %lu, c: %lu", a, b, size, new_size, county);
         int check5 = copy_from_user(buf->wp,seq,new_size);
         if(check5 != 0)
         {
@@ -139,7 +143,6 @@ size_t buffer_write(struct buffer * buf, char * seq, size_t size)
         {
             new_size = min(b,size);
             buf->wp = buf->buffer;
-            // TODO: Possible mistake?
             int check6 = copy_from_user(buf->wp,seq,new_size - 1);
             if(check6 != 0)
             {
@@ -149,17 +152,17 @@ size_t buffer_write(struct buffer * buf, char * seq, size_t size)
             county += new_size;
         }
         buf->wp += new_size;
-        // printk(KERN_WARNING "a: %lu, b: %lu, size: %lu, ns: %lu, c: %lu", a, b, size, new_size, county);
     }
     // If we reached the end of the buffer, write from the start.
-    if (buf->wp == buf->buffer + buf->buffersize) {
+    if (buf->wp == buf->buffer + buf->buffersize) 
+    {
         buf->wp = buf->buffer;
     }
     mutex_unlock (&buf->mutex);
-    // This might be the wrong count
     return county;
 }
 
+/* read from buffer */
 size_t buffer_read(struct buffer * buf, char * seq, size_t size)
 {
     size_t new_size = 0;
@@ -203,7 +206,8 @@ size_t buffer_read(struct buffer * buf, char * seq, size_t size)
   
     }
     // If we reached the end of the buffer, read from the start.
-    if (buf->rp == buf->buffer + buf->buffersize) {
+    if (buf->rp == buf->buffer + buf->buffersize) 
+    {
         buf->rp = buf->buffer;
     }
     mutex_unlock (&buf->mutex);

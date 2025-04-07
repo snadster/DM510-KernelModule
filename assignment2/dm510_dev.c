@@ -17,7 +17,6 @@
 #include <linux/uaccess.h>
 #include <linux/semaphore.h>
 #include <linux/cdev.h>
-/* #include <asm/system.h> */
 #include <asm/switch_to.h>
 
 
@@ -56,12 +55,12 @@ static struct file_operations dm510_fops =
     .unlocked_ioctl = dm510_ioctl
 };
 
+/* pipe */
 struct phat_pipe 
 {
 	wait_queue_head_t inq, outq;      	/* read and write queues */
 	char *buffer, *end;                	/* begin of buf, end of buf */
-	int buffersize;                    	/* used in pointer arithmetic */
-	// char *rp, *wp;                  	
+	int buffersize;                    	/* used in pointer arithmetic */               	
 	int nreaders, nwriters;            	/* number of openings for r/w */
 	struct buffer *read_buffer;			/* where to read */
 	struct buffer *write_buffer;		/* where to write */
@@ -77,7 +76,7 @@ struct phat_pipe
 static struct phat_pipe devices[DEVICE_COUNT];
 static struct buffer buffers[BUFFER_COUNT];
 dev_t global_device = MKDEV(MAJOR_NUMBER, MIN_MINOR_NUMBER);
-static int max_chefs = 5;
+static int max_chefs = 5; //max amt of readers
 
 /* no more uppercase */
 static int device_count = DEVICE_COUNT; /* number of pipe devices */
@@ -122,8 +121,6 @@ int dm510_init_module( void )
 		init_waitqueue_head(&devices[i].inq);
 		init_waitqueue_head(&devices[i].outq);
 		mutex_init(&devices[i].mutex);
-		// printk("Device(%d) = (%d, %d)", i, ( i % buffer_count ), 
-		// 							(( i + 1 ) % buffer_count )); // maybe this needs to go maybe not
 		devices[i].read_buffer = buffers + ( i % buffer_count );
 		devices[i].write_buffer = buffers + (( i + 1 ) % buffer_count );
 		setup_cdev( devices+i, global_device+i );
@@ -181,7 +178,7 @@ static int dm510_open( struct inode *inode, struct file *filp )
 		}
 	}
 
-	// checking for too many writers using count and flags
+	/* checking for too many writers using count and flags */
 	/* use f_mode,not  f_flags: it's cleaner (fs/open.c tells why) */
 	if(filp->f_mode & FMODE_WRITE)
 	{
@@ -230,15 +227,13 @@ static int dm510_release( struct inode *inode, struct file *filp )
 
 /* Called when a process, which already opened the dev file, attempts to read from it. */
 static ssize_t dm510_read( struct file *filp,
-    char *buf,      /* The buffer to fill with data     */
-    size_t count,   /* The max number of bytes to read  */
-    loff_t *f_pos )  /* The offset in the file           */
+    char *buf,      // The buffer to fill with data     
+    size_t count,   // The max number of bytes to read  
+    loff_t *f_pos ) // The offset in the file           
 {	
 	struct phat_pipe *dev = filp->private_data;
 	char **rp = &dev->read_buffer->rp;		// rp in buffer struct
 	char **wp = &dev->read_buffer->wp;		// wp in buffer struct
-
-	// printk(KERN_INFO "R0, %px, %px\n", (void*)*rp, (void*)*wp);
 
 	if (mutex_lock_interruptible(&dev->mutex)) 
 	{
@@ -248,59 +243,43 @@ static ssize_t dm510_read( struct file *filp,
 
 	while (*rp == *wp) /* nothing to read */
 	{ 
-		// printk(KERN_INFO "R1, %px, %px\n", (void*)dev->read_buffer->rp, (void*)dev->read_buffer->wp);
-		mutex_unlock(&dev->mutex); /* release the lock */
+		mutex_unlock(&dev->mutex); // release the lock 
 		if (filp->f_flags & O_NONBLOCK)
 		{
-			// printk(KERN_INFO "R2, %px, %px\n", (void*)dev->read_buffer->rp, (void*)dev->read_buffer->wp);
 			printk(KERN_WARNING "unable to block file pointer");
 			return -EAGAIN;
 		}
-
-		// PDEBUG("\"%s\" reading: going to sleep\n", current->comm);
 		if (wait_event_interruptible(dev->inq, (*rp != *wp))) 
 		{
-			// printk(KERN_INFO "R3, %px, %px\n", (void*)dev->read_buffer->rp, (void*)dev->read_buffer->wp);
 			printk(KERN_WARNING "reader's sleep interrupted");
 			return -ERESTARTSYS; /* signal: tell the fs layer to handle it */
 		}
 		/* otherwise loop, but first reacquire the lock */
 		if (mutex_lock_interruptible(&dev->mutex)) 
 		{
-			// printk(KERN_INFO "R4, %px, %px\n", (void*)dev->read_buffer->rp, (void*)dev->read_buffer->wp);
 			return -ERESTARTSYS;
 		}
 	}
-	// printk(KERN_INFO "R5, %px, %px\n", (void*)dev->read_buffer->rp, (void*)dev->read_buffer->wp);
 	/* ok, data is there, return something */
-	/* since we use two buffers, we dont check for wrapping like scull did */
 	count = buffer_read(dev->read_buffer, buf, count);
 	mutex_unlock (&dev->mutex);
 
-	/* finally, awake any writer */
+	/* finally, awake all writers */
 	for(int i = 0; i < device_count; i++)
 	{
 		wake_up_interruptible(&devices[i].outq);
 	}
-
-	// printk(KERN_INFO "R6, %px, %px\n", (void*)dev->read_buffer->rp, (void*)dev->read_buffer->wp);
-	// printk(KERN_INFO "count: %zx\n", count);
-	// PDEBUG("\"%s\" did read %li bytes\n",current->comm, (long)count);
 	return count; //return number of bytes read
 }
 
 
 /* Called when a process writes to dev file */
 static ssize_t dm510_write( struct file *filp,
-    const char *buf,/* The buffer to get data from      */
-    size_t count,   /* The max number of bytes to write */
-    loff_t *f_pos )  /* The offset in the file           */
+    const char *buf, // The buffer to get data from      
+    size_t count,    // The max number of bytes to write 
+    loff_t *f_pos )  // The offset in the file           
 {
 	struct phat_pipe *dev = filp->private_data;
-	// char *rp = dev->read_buffer->rp;
-	// char *wp = dev->read_buffer->wp;
-
-	// printk(KERN_INFO "W0, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
 
 	if (mutex_lock_interruptible(&dev->mutex))
 	{
@@ -318,11 +297,9 @@ static ssize_t dm510_write( struct file *filp,
 	/* ok, space is there, accept something */
 	while (space(dev->write_buffer) < count)
 	{
-		// printk(KERN_INFO "W1, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
 		mutex_unlock(&dev->mutex);
 		if (filp->f_flags & O_NONBLOCK)
 		{
-			// printk(KERN_INFO "W2, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
 			printk(KERN_WARNING "unable to block file pointer");
 			return -EAGAIN;
 		}
@@ -330,49 +307,41 @@ static ssize_t dm510_write( struct file *filp,
 		if (wait_event_interruptible(dev->outq, 
 			(space(dev->write_buffer) >= count)))
 		{
-			// printk(KERN_INFO "W3, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
 			printk(KERN_WARNING "writer's sleep interrupted ");
 			return -EAGAIN;
 		}
 
 		if (mutex_lock_interruptible(&dev->mutex))
 		{
-			// printk(KERN_INFO "W4, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
 			printk(KERN_WARNING "mutex lock interrupted ");
 			return -ERESTARTSYS;
 		}
 	}
-	
-	// printk(KERN_INFO "W5, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
-	count = buffer_write(dev->write_buffer, (char*)buf, count);
-	// PDEBUG("Going to accept %li bytes to %px from %px\n", (long)count, &dev->read_buffer->wp, buf);
 
-	/* finally, awake any reader */
+	count = buffer_write(dev->write_buffer, (char*)buf, count);
+
 	for(int i = 0; i < device_count; i++)
 	{
 		wake_up_interruptible(&devices[i].inq);
 	}
 
-	// PDEBUG("\"%s\" did write %li bytes\n",current->comm, (long)count);
 	mutex_unlock(&dev->mutex);
-	
-	// printk(KERN_INFO "W6, %px, %px\n", (void*)dev->write_buffer->rp, (void*)dev->write_buffer->wp);
-	// printk(KERN_INFO "count: %zx\n", count);
-	return count; //return number of bytes written
+
+	return count;  //return number of bytes written
 }
 
 
-/* called by system call icotl (I/O control)*/
+/* called by system call icotl (I/O control) */
 long dm510_ioctl( 
     struct file *filp, 
-    unsigned int cmd,   /* command passed from the user */
-    unsigned long arg ) /* argument of the command */
+    unsigned int cmd,   // command passed from the user
+    unsigned long arg ) // argument of the command
 {
-	if(cmd == 0)
+	if(cmd == 0) //give buffer size
 	{
 		return buffers->buffersize;
 	}
-	else if(cmd == 1)
+	else if(cmd == 1) //change buffer size
 	{
 		for( int i = 0; i < buffer_count; i++ )
 		{
@@ -392,18 +361,16 @@ long dm510_ioctl(
 			}
 		}
 	}
-	else if(cmd == 2)
+	else if(cmd == 2) //check amt of readers
 	{
 		return max_chefs;
 	}
-	else if(cmd == 3)
+	else if(cmd == 3) //change amt of readers
 	{
 		max_chefs = arg;
-		//also needs more here but i am tired.
 	} 
-	// they do more things here but idk what the fck theyre doing.
 	printk(KERN_INFO "DM510: ioctl called.\n");
-	return 0; //has to be changed
+	return 0;
 }
 
 module_init( dm510_init_module );
